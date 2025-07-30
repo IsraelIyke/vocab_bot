@@ -534,11 +534,11 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // If waiting for custom start number
+  // Waiting for custom start number
   if (customStartMode.get(chatId)) {
     const num = parseInt(text, 10);
     if (!isNaN(num) && num >= 1 && num <= verbs.length) {
-      userProgress.set(chatId, num - 1); // index starts at 0
+      userProgress.set(chatId, num - 1);
       customStartMode.delete(chatId);
       await sendMessage(chatId, `✅ Starting from verb #${num}`);
       await askQuestion(chatId);
@@ -556,13 +556,17 @@ export default async function handler(req, res) {
 
   if (currentIndex < verbs.length) {
     const verb = verbs[currentIndex];
-    const correctAnswer = verb.english.toLowerCase();
-    const userAnswer = text.toLowerCase();
+    const result = compareAnswer(text, verb.english);
 
-    if (userAnswer === correctAnswer) {
+    if (result === "correct") {
       await sendMessage(
         chatId,
         `✅ Correct! **${verb.italian}** means **${verb.english}**.`
+      );
+    } else if (result === "partial") {
+      await sendMessage(
+        chatId,
+        `⚠️ Partially correct. **${verb.italian}** means **${verb.english}**.`
       );
     } else {
       await sendMessage(
@@ -571,7 +575,7 @@ export default async function handler(req, res) {
       );
     }
 
-    // Next question
+    // Move to next question
     userProgress.set(chatId, currentIndex + 1);
     await askQuestion(chatId);
   } else {
@@ -583,6 +587,47 @@ export default async function handler(req, res) {
   }
 
   res.status(200).end();
+}
+
+// Compare intelligently: ignores punctuation, whitespace, and word order
+function compareAnswer(userInput, correctAnswer) {
+  const normalize = (str) =>
+    str
+      .toLowerCase()
+      .replace(/[.,!?;:]/g, "") // remove punctuation
+      .replace(/\s+/g, " ") // collapse spaces
+      .trim();
+
+  const cleanUser = normalize(userInput);
+  const cleanCorrect = normalize(correctAnswer);
+
+  // Exact match (ignores punctuation/whitespace differences)
+  if (cleanUser === cleanCorrect) return "correct";
+
+  // Split into words
+  const userWords = cleanUser.split(" ");
+  const correctWords = cleanCorrect.split(" ");
+
+  // Count matching words (ignore duplicates)
+  let matchCount = 0;
+  for (const word of [...new Set(userWords)]) {
+    if (correctWords.includes(word)) {
+      matchCount++;
+    }
+  }
+
+  // If all words match regardless of order
+  if (
+    userWords.length === correctWords.length &&
+    matchCount === correctWords.length
+  ) {
+    return "correct";
+  }
+
+  // If at least 2 words match
+  if (matchCount >= 2) return "partial";
+
+  return "wrong";
 }
 
 // Ask next question
