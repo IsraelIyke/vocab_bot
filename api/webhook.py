@@ -7,7 +7,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Store token from environment or fallback (not recommended for production)
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8279668033:AAGE9Mg9k20tQVXRHCzY1eVhVDlojvKuNic")
+# BOT_TOKEN = os.environ.get("BOT_TOKEN", "8279668033:AAGE9Mg9k20tQVXRHCzY1eVhVDlojvKuNic")
 
 # Verb list
 verbs = [
@@ -552,7 +552,7 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def webhook(request):
     """Vercel webhook handler."""
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token("8279668033:AAGE9Mg9k20tQVXRHCzY1eVhVDlojvKuNic").build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("restart", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer))
