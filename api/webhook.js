@@ -5,7 +5,6 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// Verb list (example)
 const verbs = [
   { id: 1, italian: "andare", english: "to go" },
   { id: 2, italian: "avere", english: "to have" },
@@ -509,12 +508,10 @@ const verbs = [
   { id: 500, italian: "promettere", english: "to promise" },
 ];
 
-// Helper: normalize text for comparison
 function normalize(text) {
   return text.toLowerCase().trim().replace(/\s+/g, " ");
 }
 
-// Helper: check partial match (≥ 2 matching words)
 function isPartialMatch(userAnswer, correctAnswer) {
   const userWords = normalize(userAnswer).split(" ");
   const correctWords = normalize(correctAnswer).split(" ");
@@ -532,14 +529,14 @@ export default async function handler(req, res) {
   const text = message?.text?.trim();
   if (!chatId || !text) return res.status(200).end();
 
-  // START / RESTART
+  // START command
   if (text === "/start" || text === "/restart") {
     await supabase.from("verbs").upsert(
       {
         telegram_id: String(chatId),
         current_index: 0,
         wrong_answers: [],
-        last_wrong_check: new Date().toISOString(),
+        awaiting_answer: verbs[0].id,
       },
       { onConflict: "telegram_id" }
     );
@@ -549,48 +546,34 @@ export default async function handler(req, res) {
   }
 
   // Get user progress
-  const { data: progressData } = await supabase
+  const { data: progress } = await supabase
     .from("verbs")
     .select("*")
     .eq("telegram_id", String(chatId))
     .single();
 
-  if (!progressData) {
+  if (!progress) {
     await sendMessage(chatId, "Please start first with /start");
     return res.status(200).end();
   }
 
-  let { current_index, wrong_answers, last_wrong_check } = progressData;
+  let { current_index, wrong_answers, awaiting_answer } = progress;
   wrong_answers = wrong_answers || [];
 
-  let usingWrongList = false;
-  let currentVerb;
-
-  // If still going through normal verbs
-  if (current_index < verbs.length) {
-    currentVerb = verbs[current_index];
-  }
-  // If finished normal verbs, check if we should review wrong ones
-  else if (wrong_answers.length > 0) {
-    usingWrongList = true;
-    currentVerb = verbs.find((v) => v.id === wrong_answers[0]);
-  }
-  // If nothing left
-  else {
-    await sendMessage(
-      chatId,
-      "🎉 Congratulations! You've completed all verbs!"
-    );
-    await supabase
-      .from("verbs")
-      .update({
-        current_index: 0,
-        wrong_answers: [],
-      })
-      .eq("telegram_id", String(chatId));
+  // If not waiting for an answer → something is wrong
+  if (!awaiting_answer) {
+    await sendMessage(chatId, "Please start first with /start");
     return res.status(200).end();
   }
 
+  // Find the verb that was being asked
+  const currentVerb = verbs.find((v) => v.id === awaiting_answer);
+  if (!currentVerb) {
+    await sendMessage(chatId, "Error: Verb not found. Try /start again.");
+    return res.status(200).end();
+  }
+
+  // Compare answer
   const userAnswer = normalize(text);
   const correctAnswer = normalize(currentVerb.english);
 
@@ -615,42 +598,49 @@ export default async function handler(req, res) {
       wrong_answers.push(currentVerb.id);
   }
 
-  // Move index
-  if (usingWrongList) {
-    wrong_answers.shift(); // remove the one we just asked
+  // Move to next
+  current_index++;
+  if (current_index >= verbs.length) {
+    if (wrong_answers.length > 0) {
+      // Restart with wrong answers
+      const nextVerbId = wrong_answers[0];
+      await supabase
+        .from("verbs")
+        .update({
+          current_index,
+          wrong_answers,
+          awaiting_answer: nextVerbId,
+        })
+        .eq("telegram_id", String(chatId));
+
+      const nextVerb = verbs.find((v) => v.id === nextVerbId);
+      await sendMessage(
+        chatId,
+        `(Review) What does **${nextVerb.italian}** mean?`
+      );
+    } else {
+      await sendMessage(chatId, "🎉 All done! Use /start to try again.");
+      await supabase
+        .from("verbs")
+        .update({
+          current_index: 0,
+          wrong_answers: [],
+          awaiting_answer: null,
+        })
+        .eq("telegram_id", String(chatId));
+    }
   } else {
-    current_index++;
-  }
+    const nextVerbId = verbs[current_index].id;
+    await supabase
+      .from("verbs")
+      .update({
+        current_index,
+        wrong_answers,
+        awaiting_answer: nextVerbId,
+      })
+      .eq("telegram_id", String(chatId));
 
-  // Save progress
-  await supabase
-    .from("verbs")
-    .update({
-      current_index,
-      wrong_answers,
-    })
-    .eq("telegram_id", String(chatId));
-
-  // Ask next question
-  if (usingWrongList && wrong_answers.length > 0) {
-    const nextVerb = verbs.find((v) => v.id === wrong_answers[0]);
-    await sendMessage(
-      chatId,
-      `(Review) What does **${nextVerb.italian}** mean?`
-    );
-  } else if (!usingWrongList && current_index < verbs.length) {
     await askQuestion(chatId, current_index);
-  } else if (!usingWrongList && wrong_answers.length > 0) {
-    const nextVerb = verbs.find((v) => v.id === wrong_answers[0]);
-    await sendMessage(
-      chatId,
-      `(Review) What does **${nextVerb.italian}** mean?`
-    );
-  } else {
-    await sendMessage(
-      chatId,
-      "🎉 You’re done for now! Use /start to try again."
-    );
   }
 
   res.status(200).end();
