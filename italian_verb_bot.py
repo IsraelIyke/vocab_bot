@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# List of verbs (truncated here for brevity, replace with the full 500)
+# List of verbs (with IDs)
 verbs = [
     {"id": 1, "italian": "andare", "english": "to go"},
     {"id": 2, "italian": "avere", "english": "to have"},
@@ -510,9 +510,6 @@ verbs = [
     {"id": 500, "italian": "promettere", "english": "to promise"}
 ]
 
-
-
-
 # Store user progress (chat_id: current_question_index)
 user_progress = {}
 
@@ -527,9 +524,13 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if current_index < len(verbs):
         verb = verbs[current_index]
-        await update.message.reply_text(f"({current_index + 1}/{len(verbs)}) What does **{verb['italian']}** mean?")
+        await update.message.reply_text(
+            f"({verb['id']}/{len(verbs)}) What does **{verb['italian']}** mean?"
+        )
     else:
         await update.message.reply_text("🎉 Congratulations! You've completed all 500 verbs!")
+        # Optionally reset progress
+        user_progress[chat_id] = 0
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -553,10 +554,11 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     # Replace 'YOUR_BOT_TOKEN' with your actual Telegram bot token
-    application = Application.builder().token("8279668033:AAGE9Mg9k20tQVXRHCzY1eVhVDlojvKuNic").build()
+    application = Application.builder().token("YOUR_BOT_TOKEN").build()
 
     # Command handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("restart", start))  # Optional restart command
 
     # Message handler (for answers)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer))
