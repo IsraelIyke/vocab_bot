@@ -1,10 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
-
+// Italian verbs
 const verbs = [
   { id: 1, italian: "andare", english: "to go" },
   { id: 2, italian: "avere", english: "to have" },
@@ -508,159 +502,113 @@ const verbs = [
   { id: 500, italian: "promettere", english: "to promise" },
 ];
 
-function normalize(text) {
-  return text.toLowerCase().trim().replace(/\s+/g, " ");
-}
-
-function isPartialMatch(userAnswer, correctAnswer) {
-  const userWords = normalize(userAnswer).split(" ");
-  const correctWords = normalize(correctAnswer).split(" ");
-  const matchCount = userWords.filter((word) =>
-    correctWords.includes(word)
-  ).length;
-  return matchCount >= 2;
-}
+// In-memory session
+const userProgress = new Map();
+const customStartMode = new Map();
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(200).send("Bot running");
+  if (req.method !== "POST") {
+    return res.status(200).send("Bot running");
+  }
 
   const { message } = req.body;
   const chatId = message?.chat?.id;
   const text = message?.text?.trim();
+
   if (!chatId || !text) return res.status(200).end();
 
-  // START command
+  // /start → start from first verb
   if (text === "/start" || text === "/restart") {
-    await supabase.from("verbs").upsert(
-      {
-        telegram_id: String(chatId),
-        current_index: 0,
-        wrong_answers: [],
-        awaiting_answer: verbs[0].id,
-      },
-      { onConflict: "telegram_id" }
-    );
-
-    await askQuestion(chatId, 0);
+    userProgress.set(chatId, 0);
+    await askQuestion(chatId);
     return res.status(200).end();
   }
 
-  // Get user progress
-  const { data: progress } = await supabase
-    .from("verbs")
-    .select("*")
-    .eq("telegram_id", String(chatId))
-    .single();
-
-  if (!progress) {
-    await sendMessage(chatId, "Please start first with /start");
-    return res.status(200).end();
-  }
-
-  let { current_index, wrong_answers, awaiting_answer } = progress;
-  wrong_answers = wrong_answers || [];
-
-  // If not waiting for an answer → something is wrong
-  if (!awaiting_answer) {
-    await sendMessage(chatId, "Please start first with /start");
-    return res.status(200).end();
-  }
-
-  // Find the verb that was being asked
-  const currentVerb = verbs.find((v) => v.id === awaiting_answer);
-  if (!currentVerb) {
-    await sendMessage(chatId, "Error: Verb not found. Try /start again.");
-    return res.status(200).end();
-  }
-
-  // Compare answer
-  const userAnswer = normalize(text);
-  const correctAnswer = normalize(currentVerb.english);
-
-  if (userAnswer === correctAnswer) {
+  // /custom_start → ask for serial number
+  if (text === "/custom_start") {
+    customStartMode.set(chatId, true);
     await sendMessage(
       chatId,
-      `✅ Correct! **${currentVerb.italian}** means **${currentVerb.english}**.`
+      "📌 Enter the serial number (1–500) to start from:"
     );
-  } else if (isPartialMatch(userAnswer, correctAnswer)) {
-    await sendMessage(
-      chatId,
-      `⚠️ Partially correct. **${currentVerb.italian}** means **${currentVerb.english}**.`
-    );
-    if (!wrong_answers.includes(currentVerb.id))
-      wrong_answers.push(currentVerb.id);
-  } else {
-    await sendMessage(
-      chatId,
-      `❌ Not quite. **${currentVerb.italian}** means **${currentVerb.english}**.`
-    );
-    if (!wrong_answers.includes(currentVerb.id))
-      wrong_answers.push(currentVerb.id);
+    return res.status(200).end();
   }
 
-  // Move to next
-  current_index++;
-  if (current_index >= verbs.length) {
-    if (wrong_answers.length > 0) {
-      // Restart with wrong answers
-      const nextVerbId = wrong_answers[0];
-      await supabase
-        .from("verbs")
-        .update({
-          current_index,
-          wrong_answers,
-          awaiting_answer: nextVerbId,
-        })
-        .eq("telegram_id", String(chatId));
-
-      const nextVerb = verbs.find((v) => v.id === nextVerbId);
+  // If waiting for custom start number
+  if (customStartMode.get(chatId)) {
+    const num = parseInt(text, 10);
+    if (!isNaN(num) && num >= 1 && num <= verbs.length) {
+      userProgress.set(chatId, num - 1); // index starts at 0
+      customStartMode.delete(chatId);
+      await sendMessage(chatId, `✅ Starting from verb #${num}`);
+      await askQuestion(chatId);
+    } else {
       await sendMessage(
         chatId,
-        `(Review) What does **${nextVerb.italian}** mean?`
+        "❌ Please enter a valid number between 1 and 500."
+      );
+    }
+    return res.status(200).end();
+  }
+
+  // Handle answers
+  let currentIndex = userProgress.get(chatId) ?? 0;
+
+  if (currentIndex < verbs.length) {
+    const verb = verbs[currentIndex];
+    const correctAnswer = verb.english.toLowerCase();
+    const userAnswer = text.toLowerCase();
+
+    if (userAnswer === correctAnswer) {
+      await sendMessage(
+        chatId,
+        `✅ Correct! **${verb.italian}** means **${verb.english}**.`
       );
     } else {
-      await sendMessage(chatId, "🎉 All done! Use /start to try again.");
-      await supabase
-        .from("verbs")
-        .update({
-          current_index: 0,
-          wrong_answers: [],
-          awaiting_answer: null,
-        })
-        .eq("telegram_id", String(chatId));
+      await sendMessage(
+        chatId,
+        `❌ Not quite. **${verb.italian}** means **${verb.english}**.`
+      );
     }
-  } else {
-    const nextVerbId = verbs[current_index].id;
-    await supabase
-      .from("verbs")
-      .update({
-        current_index,
-        wrong_answers,
-        awaiting_answer: nextVerbId,
-      })
-      .eq("telegram_id", String(chatId));
 
-    await askQuestion(chatId, current_index);
+    // Next question
+    userProgress.set(chatId, currentIndex + 1);
+    await askQuestion(chatId);
+  } else {
+    await sendMessage(
+      chatId,
+      "🎉 Congratulations! You've completed all 500 verbs!"
+    );
+    userProgress.set(chatId, 0);
   }
 
   res.status(200).end();
 }
 
-async function askQuestion(chatId, index) {
-  const verb = verbs[index];
-  await sendMessage(
-    chatId,
-    `(${verb.id}/${verbs.length}) What does **${verb.italian}** mean?`
-  );
+// Ask next question
+async function askQuestion(chatId) {
+  const index = userProgress.get(chatId) ?? 0;
+  if (index < verbs.length) {
+    const verb = verbs[index];
+    await sendMessage(
+      chatId,
+      `(${verb.id}/${verbs.length}) What does **${verb.italian}** mean?`
+    );
+  }
 }
 
+// Send message to Telegram
 async function sendMessage(chatId, text) {
   await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "Markdown",
+      }),
     }
   );
 }
