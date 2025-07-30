@@ -1,6 +1,11 @@
-// Italian Verbs Telegram Bot - Vercel webhook style
+import { createClient } from "@supabase/supabase-js";
 
-// Store verbs in memory
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
+
+// Verb list (example)
 const verbs = [
   { id: 1, italian: "andare", english: "to go" },
   { id: 2, italian: "avere", english: "to have" },
@@ -504,86 +509,168 @@ const verbs = [
   { id: 500, italian: "promettere", english: "to promise" },
 ];
 
-// Store user progress in memory
-const userProgress = new Map();
+// Helper: normalize text for comparison
+function normalize(text) {
+  return text.toLowerCase().trim().replace(/\s+/g, " ");
+}
 
-// Main webhook handler
+// Helper: check partial match (≥ 2 matching words)
+function isPartialMatch(userAnswer, correctAnswer) {
+  const userWords = normalize(userAnswer).split(" ");
+  const correctWords = normalize(correctAnswer).split(" ");
+  const matchCount = userWords.filter((word) =>
+    correctWords.includes(word)
+  ).length;
+  return matchCount >= 2;
+}
+
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(200).send("Bot running");
-  }
+  if (req.method !== "POST") return res.status(200).send("Bot running");
 
   const { message } = req.body;
   const chatId = message?.chat?.id;
   const text = message?.text?.trim();
-
   if (!chatId || !text) return res.status(200).end();
 
-  // START command
+  // START / RESTART
   if (text === "/start" || text === "/restart") {
-    userProgress.set(chatId, 0);
-    await askQuestion(chatId);
+    await supabase.from("verbs").upsert(
+      {
+        telegram_id: String(chatId),
+        current_index: 0,
+        wrong_answers: [],
+        last_wrong_check: new Date().toISOString(),
+      },
+      { onConflict: "telegram_id" }
+    );
+
+    await askQuestion(chatId, 0);
     return res.status(200).end();
   }
 
-  // ANSWER handling
-  let currentIndex = userProgress.get(chatId) ?? 0;
+  // Get user progress
+  const { data: progressData } = await supabase
+    .from("verbs")
+    .select("*")
+    .eq("telegram_id", String(chatId))
+    .single();
 
-  if (currentIndex < verbs.length) {
-    const verb = verbs[currentIndex];
-    const correctAnswer = verb.english.toLowerCase();
-    const userAnswer = text.toLowerCase();
+  if (!progressData) {
+    await sendMessage(chatId, "Please start first with /start");
+    return res.status(200).end();
+  }
 
-    if (userAnswer === correctAnswer) {
-      await sendMessage(
-        chatId,
-        `✅ Correct! **${verb.italian}** means **${verb.english}**.`
-      );
-    } else {
-      await sendMessage(
-        chatId,
-        `❌ Not quite. **${verb.italian}** means **${verb.english}**.`
-      );
-    }
+  let { current_index, wrong_answers, last_wrong_check } = progressData;
+  wrong_answers = wrong_answers || [];
 
-    // Move to next question
-    userProgress.set(chatId, currentIndex + 1);
-    await askQuestion(chatId);
+  let usingWrongList = false;
+  let currentVerb;
+
+  // If still going through normal verbs
+  if (current_index < verbs.length) {
+    currentVerb = verbs[current_index];
+  }
+  // If finished normal verbs, check if we should review wrong ones
+  else if (wrong_answers.length > 0) {
+    usingWrongList = true;
+    currentVerb = verbs.find((v) => v.id === wrong_answers[0]);
+  }
+  // If nothing left
+  else {
+    await sendMessage(
+      chatId,
+      "🎉 Congratulations! You've completed all verbs!"
+    );
+    await supabase
+      .from("verbs")
+      .update({
+        current_index: 0,
+        wrong_answers: [],
+      })
+      .eq("telegram_id", String(chatId));
+    return res.status(200).end();
+  }
+
+  const userAnswer = normalize(text);
+  const correctAnswer = normalize(currentVerb.english);
+
+  if (userAnswer === correctAnswer) {
+    await sendMessage(
+      chatId,
+      `✅ Correct! **${currentVerb.italian}** means **${currentVerb.english}**.`
+    );
+  } else if (isPartialMatch(userAnswer, correctAnswer)) {
+    await sendMessage(
+      chatId,
+      `⚠️ Partially correct. **${currentVerb.italian}** means **${currentVerb.english}**.`
+    );
+    if (!wrong_answers.includes(currentVerb.id))
+      wrong_answers.push(currentVerb.id);
   } else {
     await sendMessage(
       chatId,
-      "🎉 Congratulations! You've completed all 500 verbs!"
+      `❌ Not quite. **${currentVerb.italian}** means **${currentVerb.english}**.`
     );
-    userProgress.set(chatId, 0);
+    if (!wrong_answers.includes(currentVerb.id))
+      wrong_answers.push(currentVerb.id);
+  }
+
+  // Move index
+  if (usingWrongList) {
+    wrong_answers.shift(); // remove the one we just asked
+  } else {
+    current_index++;
+  }
+
+  // Save progress
+  await supabase
+    .from("verbs")
+    .update({
+      current_index,
+      wrong_answers,
+    })
+    .eq("telegram_id", String(chatId));
+
+  // Ask next question
+  if (usingWrongList && wrong_answers.length > 0) {
+    const nextVerb = verbs.find((v) => v.id === wrong_answers[0]);
+    await sendMessage(
+      chatId,
+      `(Review) What does **${nextVerb.italian}** mean?`
+    );
+  } else if (!usingWrongList && current_index < verbs.length) {
+    await askQuestion(chatId, current_index);
+  } else if (!usingWrongList && wrong_answers.length > 0) {
+    const nextVerb = verbs.find((v) => v.id === wrong_answers[0]);
+    await sendMessage(
+      chatId,
+      `(Review) What does **${nextVerb.italian}** mean?`
+    );
+  } else {
+    await sendMessage(
+      chatId,
+      "🎉 You’re done for now! Use /start to try again."
+    );
   }
 
   res.status(200).end();
 }
 
-// Ask next question
-async function askQuestion(chatId) {
-  const index = userProgress.get(chatId) ?? 0;
-  if (index < verbs.length) {
-    const verb = verbs[index];
-    await sendMessage(
-      chatId,
-      `(${verb.id}/${verbs.length}) What does **${verb.italian}** mean?`
-    );
-  }
+async function askQuestion(chatId, index) {
+  const verb = verbs[index];
+  await sendMessage(
+    chatId,
+    `(${verb.id}/${verbs.length}) What does **${verb.italian}** mean?`
+  );
 }
 
-// Send message to Telegram
 async function sendMessage(chatId, text) {
   await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: "Markdown",
-      }),
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
     }
   );
 }
